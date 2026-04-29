@@ -72,6 +72,9 @@ def parse_args():
     return parser.parse_args()
 
 def timeout(settings, func, args=(), kwargs={}, timeout_duration=1):
+    if timeout_duration < 1:
+        settings.logger.info(f"Tried to create timeout with duration {timeout_duration}. Setting to 1 second instead.")
+    timeout_duration = max(timeout_duration, 1)  # ensure timeout is at least 1 second
     result = None
     class TimeoutError(Exception):
         pass
