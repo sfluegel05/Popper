@@ -6,8 +6,6 @@ from pysat.formula import IDPool
 import time
 import bitarray
 
-POS_EXAMPLE_WEIGHT = 1
-NEG_EXAMPLE_WEIGHT = 1
 
 class Combiner:
     def __init__(self, settings, tester, coverage_pos, coverage_neg, prog_lookup):
@@ -176,14 +174,14 @@ class Combiner:
             for rule_id in rule_var:
                 if rule_var[rule_id] is not None:
                     soft_clauses.append([-rule_var[rule_id]])
-                    weights.append(ruleid_to_size[rule_id])
+                    weights.append(self.settings.mdl_weight_size * ruleid_to_size[rule_id])
             for i in pos_index:
                 soft_clauses.append([pos_example_covered_var[i]])
-                weights.append(POS_EXAMPLE_WEIGHT)
+                weights.append(self.settings.mdl_weight_fn)
             if not self.settings.nonoise:
                 for i in neg_index:
                     soft_clauses.append([-neg_example_covered_var[i]])
-                    weights.append(NEG_EXAMPLE_WEIGHT)
+                    weights.append(self.settings.mdl_weight_fp)
 
         # PRUNE INCONSISTENT
         for prog in self.inconsistent:
@@ -240,7 +238,7 @@ class Combiner:
                         break
             else:
                 if self.settings.best_prog_score:
-                    if mdl_ <= POS_EXAMPLE_WEIGHT * fn + NEG_EXAMPLE_WEIGHT * fp + size:
+                    if mdl_ <= self.settings.mdl_weight_fn * fn + self.settings.mdl_weight_fp * fp + self.settings.mdl_weight_size * size:
                         break
 
             model_found = True

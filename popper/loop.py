@@ -85,7 +85,7 @@ class Popper():
             min_score = None
             saved_scores = dict()
             settings.best_prog_score = 0, num_pos, num_neg, 0, 0
-            settings.best_mdl = num_pos
+            settings.best_mdl = mdl_score(num_pos, 0, 0, settings.mdl_weight_fn, settings.mdl_weight_fp, settings.mdl_weight_size)
             # save hypotheses for which we pruned spec / gen from a certain size only
             # once we update the best mdl score, we can prune spec / gen from a better size for some of these
             self.seen_hyp_spec, self.seen_hyp_gen = defaultdict(list), defaultdict(list)
@@ -211,16 +211,14 @@ class Popper():
                     fp = neg_covered.count(1)
                     tn = num_neg-fp
                     score = tp, fn, tn, fp, prog_size
-                    mdl = mdl_score(fn, fp, prog_size)
+                    mdl = mdl_score(fn, fp, prog_size, settings.mdl_weight_fn, settings.mdl_weight_fp, settings.mdl_weight_size)
                     if settings.debug:
                         settings.logger.debug(f'tp:{tp} fn:{fn} tn:{tn} fp:{fp} mdl:{mdl}')
                     saved_scores[prog] = [fp, fn, prog_size]
                     if not min_score:
                         min_score = prog_size
 
-                    if mdl < settings.best_mdl:
-                        if skip_early_neg:
-                            assert False
+                    if not skip_early_neg and mdl < settings.best_mdl:
                         # HORRIBLE
                         combiner.best_cost = mdl
                         settings.best_prog_score = score
@@ -631,7 +629,7 @@ class Popper():
                         tp, fn, tn, fp, hypothesis_size = conf_matrix
                         settings.best_prog_score = conf_matrix
                         settings.solution = new_hypothesis
-                        best_score = mdl_score(fn, fp, hypothesis_size)
+                        best_score = mdl_score(fn, fp, hypothesis_size, settings.mdl_weight_fn, settings.mdl_weight_fp, settings.mdl_weight_size)
                         # if settings.noisy:
                             # print('new_hypothesis_found', settings.best_mdl, best_score)
                         # print('here???')
@@ -720,7 +718,7 @@ class Popper():
                     tp, fn, tn, fp, hypothesis_size = conf_matrix
                     settings.best_prog_score = conf_matrix
                     settings.solution = new_hypothesis
-                    best_score = mdl_score(fn, fp, hypothesis_size)
+                    best_score = mdl_score(fn, fp, hypothesis_size, settings.mdl_weight_fn, settings.mdl_weight_fp, settings.mdl_weight_size)
                     settings.print_incomplete_solution2(new_hypothesis, tp, fn, tn, fp, hypothesis_size)
 
                     if not settings.noisy and fp == 0 and fn == 0:
@@ -1126,7 +1124,7 @@ class Popper():
             to_delete = []
             for prog, tp, fn, tn, fp, size in seen_hyp_spec[k]:
                 # mdl = mdl_score(tuple((tp, fn, tn, fp, size)))
-                mdl = mdl_score(fn, fp, size)
+                mdl = mdl_score(fn, fp, size, self.settings.mdl_weight_fn, self.settings.mdl_weight_fp, self.settings.mdl_weight_size)
                 if score+num_pos+best_size < fp+size+mdl:
                     spec_size = score-mdl+num_pos+best_size
                     if spec_size <= size:
@@ -1141,7 +1139,7 @@ class Popper():
             to_delete = []
             for prog, tp, fn, tn, fp, size in seen_hyp_gen[k]:
                 # mdl = mdl_score(tuple((tp, fn, tn, fp, size)))
-                mdl = mdl_score(fn, fp, size)
+                mdl = mdl_score(fn, fp, size, self.settings.mdl_weight_fn, self.settings.mdl_weight_fp, self.settings.mdl_weight_size)
                 if score + num_neg + best_size < fn + size + mdl:
                     gen_size = score - mdl + num_neg + best_size
                     if gen_size <= size:
