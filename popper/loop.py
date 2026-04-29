@@ -598,8 +598,8 @@ class Popper():
                             settings.max_literals = hypothesis_size-1
                             min_coverage = settings.min_coverage = 2
                             # if we have a solution with two rules then a new rule must entail all the examples
-                            if min_coverage != num_pos and len(settings.solution) == 2:
-                                min_coverage = settings.min_coverage = num_pos
+                            # if min_coverage != num_pos and len(settings.solution) == 2:
+                                # min_coverage = settings.min_coverage = num_pos
 
                             # AC: sometimes adding these size constraints can take longer
                             for i in range(settings.max_literals+1, max_size+1):
@@ -651,8 +651,8 @@ class Popper():
 
                             min_coverage = settings.min_coverage = 2
                             # if we have a solution with two rules then a new rule must entail all the examples
-                            if min_coverage != num_pos and len(settings.solution) == 2:
-                                min_coverage = settings.min_coverage = num_pos
+                            # if min_coverage != num_pos and len(settings.solution) == 2:
+                                # min_coverage = settings.min_coverage = num_pos
 
                             # if size >= settings.max_literals and not settings.order_space:
                             if size >= settings.max_literals:
@@ -726,8 +726,8 @@ class Popper():
                         settings.max_literals = hypothesis_size-1
                         min_coverage = settings.min_coverage = 2
                         # if we have a solution with two rules then a new rule must entail all the examples
-                        if min_coverage != num_pos and len(settings.solution) == 2:
-                            min_coverage = settings.min_coverage = num_pos
+                        # if min_coverage != num_pos and len(settings.solution) == 2:
+                            # min_coverage = settings.min_coverage = num_pos
 
                         # if size >= settings.max_literals and not settings.order_space:
                         if size >= settings.max_literals:
