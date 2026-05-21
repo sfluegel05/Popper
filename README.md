@@ -1,3 +1,22 @@
+This is a fork of Popper introducing two changes:
+
+## Timeout
+The Popper timeout function does work for cases in which the preprocessing exceeds the timeout length. A fix for this issue will be added to the main version of Popper as well (see discussion in https://github.com/logic-and-learning-lab/Popper/issues/137).
+
+## Flexible MDL cost function
+The standard MDL cost function in Popper is 
+
+$cost_{B, E}(h) = size(h) + fn_{E,B}(h) + fp_{E,B}(h)$
+
+As proposed by [Hocquette et al., 2024](https://ojs.aaai.org/index.php/AAAI/article/view/28925), this can be extended to
+
+$cost_{B, E}(h) = \alpha size(h) + \beta fn_{E,B}(h) + \gamma fp_{E,B}(h)$
+
+The parameters $\alpha$, $\beta$ and $\gamma$ can be set with the command line arguments
+`--mdl-weight-size`, `--mdl-weight-fn` an `--mdl-weight-fp` (default values are 1).
+
+--- 
+
 # Popper
 
 Popper is an [inductive logic programming](https://arxiv.org/pdf/2008.07912.pdf) system. Popper combines logical reasoning with machine learning to induce rules from examples and background knowledge.
