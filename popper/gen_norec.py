@@ -1,7 +1,7 @@
 import re
 import clingo
 from importlib import resources
-from . util import GENERALISATION, SPECIALISATION, UNSAT, REDUNDANCY_CONSTRAINT1, REDUNDANCY_CONSTRAINT2, BANISH, Literal
+from . util import GENERALISATION, SPECIALISATION, UNSAT, REDUNDANCY_CONSTRAINT1, REDUNDANCY_CONSTRAINT2, BANISH, Literal, build_pred_heuristics
 from itertools import permutations
 from . import stats
 
@@ -76,8 +76,10 @@ class Generator:
             encoding.append(NOISY_ENCODING)
 
         encoding.extend(bkcons)
-        DEFAULT_HEURISTIC = "#heuristic size(N). [1000-N,true]"
-        encoding.append(DEFAULT_HEURISTIC)
+        if not self.settings.no_size_order:
+            DEFAULT_HEURISTIC = "#heuristic size(N). [1000-N,true]"
+            encoding.append(DEFAULT_HEURISTIC)
+        encoding.extend(build_pred_heuristics(self.settings))
 
         return '\n'.join(encoding)
 

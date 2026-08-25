@@ -1,6 +1,6 @@
 import time
 from bitarray.util import ones
-from . util import format_rule, rule_is_recursive, prog_is_recursive, prog_has_invention, calc_prog_size, format_literal, GENERALISATION, SPECIALISATION, UNSAT, REDUNDANCY_CONSTRAINT1, REDUNDANCY_CONSTRAINT2, TMP_ANDY, BANISH, mdl_score, canonicalise, format_prog
+from . util import format_rule, rule_is_recursive, prog_is_recursive, prog_has_invention, calc_prog_size, format_literal, GENERALISATION, SPECIALISATION, UNSAT, REDUNDANCY_CONSTRAINT1, REDUNDANCY_CONSTRAINT2, TMP_ANDY, BANISH, mdl_score, canonicalise, format_prog, order_prog, order_rule
 from . tester import Tester
 from . bkcons import get_bk_cons
 from . unsat import UnsatCoreFinder
@@ -33,7 +33,41 @@ def load_joiner(settings, tester, state):
     from . joiner import Joiner
     return Joiner(settings, tester, state)
 
-def check_size_change(state, prog_size):
+def seed_best_hypothesis(settings, tester, state):
+    """Score the hypothesis given by the user and use it as an initial upper bound for the search."""
+    prog = frozenset(settings.best_hypothesis)
+
+    logger.out('Given hypothesis:')
+    for rule in order_prog(prog):
+        logger.out(format_rule(order_rule(rule, settings)))
+
+    with stats.duration('test'):
+        pos_covered, neg_covered = tester.test_prog_all(prog)
+
+    tp = pos_covered.count(1)
+    fn = tester.num_pos - tp
+    fp = neg_covered.count(1)
+    tn = tester.num_neg - fp
+    prog_size = calc_prog_size(prog)
+    mdl = mdl_score(fn, fp, prog_size)
+
+    if mdl >= state.best_hypothesis_mdl:
+        logger.out(f'IGNORING GIVEN HYPOTHESIS: its mdl ({mdl}) does not beat the initial bound ({state.best_hypothesis_mdl})')
+        return False
+
+    logger.out(f'Pruning the search space with the given hypothesis (mdl: {mdl})')
+    update_best_hypothesis(settings, state, prog, prog_size, (tp, fn, tn, fp))
+    return True
+
+# the smallest rule Popper can generate is a head plus one body literal
+MIN_RULE_SIZE = 2
+
+def check_size_change(settings, state, prog_size):
+    if settings.no_size_order:
+        # programs no longer arrive in increasing size, so there are no size levels to track.
+        # the search could still produce a rule of any size, so assume the smallest one
+        state.search_depth = MIN_RULE_SIZE
+        return False
     if state.search_depth == prog_size:
         return False
     state.search_depth = prog_size
@@ -56,10 +90,19 @@ def popper(settings):
     num_pos, num_neg = tester.num_pos, tester.num_neg
     noisy = settings.noisy
 
+    # whether we still need to tell the generator about the sizes pruned by a seeded hypothesis
+    prune_seeded_sizes = False
+
+    if settings.no_size_order:
+        logger.out('WARNING: --no-size-order is experimental. Popper does not enumerate rules in '
+                   'increasing size, so the hypothesis it returns need not be a smallest or optimal one')
+
     if noisy:
         initialise_noisy_best_hypothesis(state, num_pos, num_neg)
         build_constraints = build_constraints_noisy
         test_prog = tester.test_prog_noisy
+        if settings.best_hypothesis is not None:
+            prune_seeded_sizes = seed_best_hypothesis(settings, tester, state)
     else:
         build_constraints = build_constraints_noiseless
         test_prog = tester.test_prog
@@ -70,8 +113,15 @@ def popper(settings):
             break
         stats.stats.total_programs += 1
 
+        # the generator needs a model before we can prune sizes, so we do it once the first program arrives
+        if prune_seeded_sizes:
+            prune_seeded_sizes = False
+            if settings.single_solve:
+                for i in range(state.max_literals+1, 1000):
+                    generator.prune_size(i)
+
         prog_size = calc_prog_size(prog)
-        size_change = check_size_change(state, prog_size)
+        size_change = check_size_change(settings, state, prog_size)
 
         # TEST
         with stats.duration('test'):

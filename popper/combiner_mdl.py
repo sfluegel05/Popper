@@ -255,8 +255,9 @@ class CombinerMDL:
             for old_prog in s_pos:
                 n1 = self.coverage_neg[old_prog]
                 # check whether old program covers a subset of the negative examples
-                if subset(n1, neg_covered):
-                    # we can skip checking size because programs are considered in size order.
+                # the size check is free when programs arrive in size order, but it is what
+                # makes this sound when they do not (--no-size-order)
+                if subset(n1, neg_covered) and self.scores[old_prog][0] <= prog_size:
                     ignore_this_prog = True
                     break
 

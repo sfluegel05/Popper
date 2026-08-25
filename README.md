@@ -63,14 +63,72 @@ These say that Popper can use the symbol *grandparent* with two arguments in the
 
 Popper can learn from [noisy](https://arxiv.org/pdf/2308.09393.pdf) data with the `--noisy` flag. Popper learns a minimal description length hypothesis.
 
+**Seeding the search with a hypothesis**
+
+When you already have a good guess at the answer, you can give it to Popper with the `--best-hypothesis` (`-b`) flag, which requires `--noisy`. Popper scores the hypothesis, uses it as its initial best hypothesis, and uses its MDL score as an upper bound on the score of any hypothesis it still needs to consider. The tighter this bound is, the more of the search space Popper prunes.
+
+The flag takes either a file of rules or the rules themselves:
+
+```
+uv run popper.py examples/noisy-molecule --noisy -b examples/noisy-molecule/hypothesis.pl
+uv run popper.py examples/noisy-molecule --noisy -b 'active(A):- has_atom(A,B),carbon(B),charged(B).'
+```
+
+The rules must follow the bias file, i.e. they may only use the declared head and body predicates and may not exceed `max_vars` or `max_body`. Popper ignores a hypothesis which is no better than the empty hypothesis and never returns a worse hypothesis than the one you give it.
+
+The `examples/noisy-molecule` problem shows what this buys you. The target concept is a chain of eight conditions and nearly every negative example is a near miss which satisfies seven of them, so Popper has to search all the way to eight body literals before it finds anything good. The hypothesis in `examples/noisy-molecule/hypothesis.pl` is the target concept with one condition missing, which is the kind of guess a chemist might make: it scores an MDL of 18, whereas Popper starts from a bound of 303 (the number of positive examples) and does not find anything that good on its own for well over a minute.
+
+Giving Popper the guess makes it search faster for as long as it has not yet found something equally good. In a 60 second run it considered 86,096 hypotheses instead of 68,319 and its mean testing time per hypothesis fell by 40%, because the bound lets it stop counting negative examples early and keeps all but the most promising rules out of the combine stage. Seeding never makes Popper return a worse hypothesis, so it is also a floor on the answer you get when the search times out.
+
+**Steering the search towards predicates**
+
+Seeding needs a whole hypothesis. When you only know which predicates are likely to matter, you can bias the *order* in which Popper considers rules with `prefer_body_pred/2` in the bias file:
+
+```prolog
+prefer_body_pred(long,10).          % try rules containing long first
+prefer_body_pred(three_wheels,10).
+prefer_body_pred(roof_open,-10).    % leave roof_open for later
+```
+
+A positive level makes Popper try to put the predicate into a rule first, a negative one makes it try to leave it out first, and a larger absolute level wins over a smaller one. This only reorders rules **of the same size**: Popper still enumerates all rules of size 2 before any rule of size 3, so the search stays complete and the answer is unchanged. What changes is *when* a good rule turns up within each size, which matters with `--noisy` because Popper prunes against the best MDL score it has found so far — a good rule found early makes the rest of that size and every later size cheaper to search.
+
+These declarations compile to clingo [domain heuristics](https://potassco.org/clingo/) over Popper's internal `body_literal/4` atoms. You can also write such directives by hand in the bias file if you want finer control, e.g. to prefer a predicate only in some argument positions:
+
+```prolog
+#heuristic body_literal(C,long,1,Vars) : clause(C), vars(1,Vars). [10,true]
+```
+
+Popper's own size heuristic uses levels just below 1000, so keep yours below that or you will break the size ordering; `prefer_body_pred/2` rejects levels outside -999..999. Hints apply to the non-recursive generator only: with recursion or predicate invention Popper does not run clingo with `--heuristic=Domain`, so they have no effect.
+
+`examples/gadget-hints` shows the effect. The target is a gadget with a part that is red, heavy, shiny and rough at once, every part of a negative example has all but one of those properties, and the bias file declares 60 further part properties that are pure noise. Finding the target takes 89s and 361,946 hypotheses without the hints, and 46s and 174,849 hypotheses with them. Comment the `prefer_body_pred` lines out of its bias file to see both.
+
+Hints pay off when irrelevant predicates dominate the branching factor. They do much less when the relevant predicates alone still span a large space: on `examples/noisy-molecule`, hinting the seven chemically meaningful relations out of fourteen changed the enumeration order but not the running time, because seven relations over three variables still generate more rules of each size than Popper gets through. Steering also cannot make Popper prune *more*: it enumerates strictly by increasing size, so every constraint learned at one size is already in place before the next size starts, whatever order the rules came in.
+
+**Turning off the size ordering (experimental)**
+
+Popper enumerates rules in increasing size because of one clingo directive, `#heuristic size(N). [1000-N,true]`. The `--no-size-order` flag drops it, so the solver picks its own order. This is worth knowing about but it is not a speed-up: it makes Popper much slower, and it forfeits the guarantee that the hypothesis returned is a smallest (or MDL-optimal) one.
+
+| | in size order | with `--no-size-order` |
+|---|---|---|
+| `examples/gadget-hints` | solved in 46s, 174,849 hypotheses | no solution in 240s, 584,650 hypotheses |
+| `examples/noisy-molecule` | mdl 18 after 92s, 136,257 hypotheses | nothing found in 120s, 69,187 hypotheses |
+
+The reason is that Popper's pruning is bottom-up. When a rule is refuted, the constraint it yields rules out that rule's *specialisations* — the bigger rules built on top of it. Without the size heuristic the solver goes straight for maximum-size rules, and refuting one of those prunes almost nothing, so the search degenerates into brute force: on `gadget-hints` it got through 3.3 times as many hypotheses as the ordered run needed and still did not find the answer. Bigger rules are also slower to test, which is why the noisy run managed only half the throughput.
+
+The flag only applies without recursion or predicate invention. With either of those, `gen_rec.py` and `gen_pi.py` solve one size at a time through an `#external size_in_literals` atom, so the ordering is structural rather than a heuristic and Popper rejects the flag.
+
 **Settings**
 
  - `--noisy`, `-n` learn from [noisy](https://arxiv.org/pdf/2308.09393.pdf) data using an MDL cost function (default: false)
+ - `--best-hypothesis F`, `-b F` seed the search with a hypothesis, given as a file of rules or as the rules themselves (requires `--noisy`, default: none)
+ - `--no-size-order` EXPERIMENTAL: do not enumerate rules in increasing size; loses the smallest/optimal guarantee and is slower (default: false)
  - `--max-vars N` maximum number of variables in a rule (default: 6)
  - `--max-body N` maximum number of body literals in a rule (default: 10)
  - `--timeout N` maximum learning time in seconds (default: 3600)
  - `-v`, `-vv`, `-vvv` increase verbosity
  - `--nuwls` use the NuWLS solver (default: false)
+
+See [search-guidance.md](search-guidance.md) for how these two features were measured, including how the hinted predicates were chosen and where they did not help.
 
 **Solvers**
 

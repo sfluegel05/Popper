@@ -2,6 +2,7 @@ from itertools import chain, combinations, permutations, product
 import clingo
 import argparse
 import os
+import re
 from . import logger
 from . import stats as _stats
 from collections import defaultdict
@@ -19,6 +20,8 @@ MAX_VARS=6
 MAX_BODY=10
 ANYTIME_TIMEOUT=10
 BATCH_SIZE=1000
+# the built-in size heuristic uses levels just below 1000, so user levels must stay below it
+MAX_HEURISTIC_LEVEL=999
 
 GENERALISATION = 1
 SPECIALISATION = 2
@@ -37,6 +40,13 @@ def parse_args():
     parser.add_argument('--max-body', type=int, default=None, help=f'Maximum number of body literals allowed in rule (default: {MAX_BODY})')
     parser.add_argument('--max-vars', type=int, default=None, help=f'Maximum number of variables allowed in rule (default: {MAX_VARS})')
     parser.add_argument('--nuwls', default=False, action='store_true', help='Use nuwls solver (default: False)')
+    parser.add_argument('--no-size-order', default=False, action='store_true',
+                        help='EXPERIMENTAL: do not make the solver enumerate rules in increasing size. '
+                             'Popper no longer guarantees a smallest/optimal hypothesis (default: False)')
+    parser.add_argument('--best-hypothesis', '-b', type=str, default=None, metavar='HYPOTHESIS',
+                        help='Seed the search with a hypothesis (a file of Prolog rules or the rules themselves). '
+                             'Its MDL score is used as an initial upper bound to prune the search space. '
+                             'Requires --noisy (default: None)')
     parser.add_argument('-v', action='count', default=1, dest='verbosity', help='Increase verbosity (-v, -vv, or -vvv)')
     parser.add_argument('-j', dest='joiner', default=False, action='store_true', help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -108,6 +118,120 @@ def rule_is_invented(rule):
 def mdl_score(fn, fp, size):
     return fn + fp + size
 
+ATOM_REGEX = re.compile(r'([a-z][a-zA-Z0-9_]*)\s*\(([^()]*)\)')
+VAR_REGEX = re.compile(r'[A-Z_][a-zA-Z0-9_]*$')
+
+class HypothesisParseError(Exception):
+    pass
+
+def _split_atom_args(args_str):
+    return [x.strip() for x in args_str.split(',') if x.strip()]
+
+def _parse_body_atoms(body_str, clause):
+    atoms = []
+    leftover = []
+    pos = 0
+    for match in ATOM_REGEX.finditer(body_str):
+        leftover.append(body_str[pos:match.start()])
+        pos = match.end()
+        atoms.append((match.group(1), _split_atom_args(match.group(2))))
+    leftover.append(body_str[pos:])
+    junk = ''.join(leftover).replace(',', '').strip()
+    if junk:
+        raise HypothesisParseError(f'cannot parse "{junk}" in the body of "{clause}."')
+    return atoms
+
+def _parse_clause(clause, settings):
+    if ':-' not in clause:
+        raise HypothesisParseError(f'expected a rule of the form "head :- body" but got "{clause}."')
+
+    head_str, body_str = clause.split(':-', 1)
+    head_match = ATOM_REGEX.fullmatch(head_str.strip())
+    if head_match is None:
+        raise HypothesisParseError(f'cannot parse the head "{head_str.strip()}" of "{clause}."')
+
+    head_pred, head_args = head_match.group(1), _split_atom_args(head_match.group(2))
+    expected_head = settings.head_literal
+    if expected_head is None:
+        raise HypothesisParseError('the bias file does not declare a head predicate')
+    if head_pred != expected_head.predicate or len(head_args) != len(expected_head.arguments):
+        expected = f'{expected_head.predicate}/{len(expected_head.arguments)}'
+        raise HypothesisParseError(f'head {head_pred}/{len(head_args)} of "{clause}." is not the head predicate {expected}')
+
+    lookup = {}
+    for i, var in enumerate(head_args):
+        if not VAR_REGEX.match(var):
+            raise HypothesisParseError(f'"{var}" in "{clause}." is not a variable (variables start with an uppercase letter)')
+        if var in lookup:
+            raise HypothesisParseError(f'variable {var} appears twice in the head of "{clause}."')
+        lookup[var] = i
+
+    next_var = len(head_args)
+    body = []
+    for pred, args in _parse_body_atoms(body_str, clause):
+        if (pred, len(args)) not in settings.body_preds and pred != head_pred:
+            raise HypothesisParseError(f'{pred}/{len(args)} in "{clause}." is not declared as a body_pred in the bias file')
+        arg_indices = []
+        for var in args:
+            if not VAR_REGEX.match(var):
+                raise HypothesisParseError(f'"{var}" in "{clause}." is not a variable (variables start with an uppercase letter)')
+            if var not in lookup:
+                lookup[var] = next_var
+                next_var += 1
+            arg_indices.append(lookup[var])
+        body.append(Literal(pred, tuple(arg_indices)))
+
+    if not body:
+        raise HypothesisParseError(f'the rule "{clause}." has an empty body')
+    if not settings.recursion_enabled and any(literal.predicate == head_pred for literal in body):
+        raise HypothesisParseError(f'the rule "{clause}." is recursive but the bias file does not enable_recursion')
+    if len(body) > settings.max_body:
+        raise HypothesisParseError(f'the rule "{clause}." has {len(body)} body literals but max_body is {settings.max_body}')
+    if next_var > settings.max_vars:
+        raise HypothesisParseError(f'the rule "{clause}." has {next_var} variables but max_vars is {settings.max_vars}')
+
+    return (expected_head, frozenset(body))
+
+def parse_hypothesis(text, settings):
+    """Parse Prolog rules, such as f(A,B):- head(A,B). into Popper's internal representation."""
+    text = re.sub(r'%.*', '', text)
+    clauses = [clause.strip() for clause in text.split('.') if clause.strip()]
+    if not clauses:
+        raise HypothesisParseError('the given hypothesis is empty')
+
+    prog = frozenset(_parse_clause(clause, settings) for clause in clauses)
+
+    if len(prog) > 1 and not (settings.recursion_enabled or settings.pi_enabled or settings.noisy):
+        raise HypothesisParseError('a hypothesis with more than one rule needs --noisy, enable_recursion, or enable_pi')
+
+    return prog
+
+def load_hypothesis(hypothesis, settings):
+    """Load a hypothesis given either as a path to a file of Prolog rules or as the rules themselves."""
+    if os.path.isfile(hypothesis):
+        with open(hypothesis) as f:
+            text = f.read()
+    elif hypothesis.endswith('.pl'):
+        raise HypothesisParseError(f'no such file: {hypothesis}')
+    else:
+        text = hypothesis
+    return parse_hypothesis(text, settings)
+
+def build_pred_heuristics(settings):
+    """Compile prefer_body_pred/2 declarations into clingo domain heuristic directives.
+
+    A positive level makes the solver try to put the predicate into a rule first, a
+    negative one makes it try to leave it out first. The levels stay below those of the
+    built-in size heuristic, so this only reorders rules of the same size.
+    """
+    lines = []
+    for pred, level in sorted(settings.pred_heuristics.items()):
+        modifier = 'true' if level > 0 else 'false'
+        for p, arity in sorted(settings.body_preds):
+            if p == pred:
+                lines.append(f'#heuristic body_literal(C,{pred},{arity},Vars) : clause(C), vars({arity},Vars). [{abs(level)},{modifier}]')
+    return lines
+
 def get_body_preds(solver):
     body_preds_ = set()
     for x in solver.symbolic_atoms.by_signature('body_pred', arity=2):
@@ -131,7 +255,7 @@ class Settings:
         settings = Settings(**conf)
         return settings
 
-    def __init__(self, timeout=TIMEOUT, max_body=MAX_BODY, max_vars=MAX_VARS, ex_file=None, bk_file=None, bias_file=None, noisy=False, nuwls=None, anytime_timeout=ANYTIME_TIMEOUT, verbosity=1, joiner=False, all_opt=False, max_body_override=False, max_vars_override=False, **kwargs):
+    def __init__(self, timeout=TIMEOUT, max_body=MAX_BODY, max_vars=MAX_VARS, ex_file=None, bk_file=None, bias_file=None, noisy=False, nuwls=None, anytime_timeout=ANYTIME_TIMEOUT, verbosity=1, joiner=False, all_opt=False, max_body_override=False, max_vars_override=False, best_hypothesis=None, no_size_order=False, **kwargs):
 
         self.all_opt = all_opt
         self.joiner = joiner
@@ -145,6 +269,7 @@ class Settings:
         self.max_body_override = max_body_override
         self.max_vars_override = max_vars_override
         self.noisy = noisy
+        self.no_size_order = no_size_order
         self.timeout = timeout
         self.verbosity = verbosity
         self.debug = verbosity == 3
@@ -166,6 +291,7 @@ class Settings:
         self.recalls = {}
         self.head_types = None
         self.body_types = {}
+        self.pred_heuristics = {}
         self.max_rules = 1
         self.single_solve = True
 
@@ -184,8 +310,27 @@ class Settings:
         self._validate_directions()
         self._initialise_caches(solver)
         self._deduce_types(solver)
+        self._deduce_pred_heuristics(solver)
 
         self.single_solve = not (self.recursion_enabled or self.pi_enabled)
+
+        # with recursion or predicate invention the generator solves one size at a time,
+        # so the size ordering is structural and cannot be turned off
+        if self.no_size_order and not self.single_solve:
+            logger.out('ERROR: --no-size-order is not supported with recursion or predicate invention')
+            exit()
+
+        # a hypothesis given by the user which seeds the search with an initial upper bound
+        self.best_hypothesis = None
+        if best_hypothesis is not None:
+            if not self.noisy:
+                logger.out('ERROR: --best-hypothesis requires --noisy')
+                exit()
+            try:
+                self.best_hypothesis = load_hypothesis(best_hypothesis, self)
+            except HypothesisParseError as error:
+                logger.out(f'ERROR: cannot parse the given hypothesis: {error}')
+                exit()
 
         logger.info(f'Max rules: {self.max_rules}')
         logger.info(f'Max vars: {self.max_vars}')
@@ -202,6 +347,7 @@ class Settings:
             #defined body_size/2.
             #defined recursive/0.
             #defined var_in_literal/4.
+            #defined prefer_body_pred/2.
         """)
         solver.ground([('bias', [])])
 
@@ -297,6 +443,18 @@ class Settings:
             for k, args in self.cached_atom_args.items():
                 if len(args) == head_arity:
                     self.cached_literals[(head_pred, k)] = Literal(head_pred, args)
+
+    def _deduce_pred_heuristics(self, solver):
+        for x in solver.symbolic_atoms.by_signature('prefer_body_pred', arity=2):
+            pred = x.symbol.arguments[0].name
+            level = x.symbol.arguments[1].number
+            if not any(p == pred for p, _arity in self.body_preds):
+                logger.out(f'ERROR: prefer_body_pred({pred},{level}) refers to {pred} which is not a body_pred')
+                exit()
+            if level == 0 or abs(level) > MAX_HEURISTIC_LEVEL:
+                logger.out(f'ERROR: prefer_body_pred({pred},{level}) needs a non-zero level between -{MAX_HEURISTIC_LEVEL} and {MAX_HEURISTIC_LEVEL}')
+                exit()
+            self.pred_heuristics[pred] = level
 
     def _deduce_types(self, solver):
         head_pred = self.head_literal.predicate if self.head_literal else None

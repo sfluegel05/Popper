@@ -51,8 +51,9 @@ def _update_search_bounds(settings, state, hypothesis_size, conf_matrix, mdl):
 
     state.solution_found = True
     state.max_literals = hypothesis_size - 1
-    # if we use joiner, then we do not learn rules in increasing size order, so skip min coverage pruning
-    if not settings.joiner:
+    # if we use joiner or --no-size-order, then we do not learn rules in increasing size order,
+    # so skip min coverage pruning
+    if not settings.joiner and not settings.no_size_order:
         state.min_pos_coverage = 2
 
 def _is_better_hypothesis(settings, state, hypothesis_size, conf_matrix, mdl):
