@@ -35,6 +35,7 @@ def exact_maxsat_solve(hard_clauses, soft_clauses, weights):
     return float("inf"), None
 
 def anytime_maxsat_solve(hard_clauses, soft_clauses, weights, timeout):
+    rc = 0
     with tempfile.NamedTemporaryFile(mode="w", suffix=".wcnf") as tmp:
         new_wcnf_to_file(hard_clauses, soft_clauses, weights, tmp)
         try:
@@ -43,8 +44,12 @@ def anytime_maxsat_solve(hard_clauses, soft_clauses, weights, timeout):
             output = subprocess.check_output(args).decode("utf-8").split("\n")
         except subprocess.CalledProcessError as error:
             output = error.output.decode("utf-8").split("\n")
+            rc = error.returncode
+        except FileNotFoundError:
+            output = []
+            rc = 127
     if "s UNSATISFIABLE" in output:
-        # print('UNSATISFIABLE')
+        print(f"[nuwls-solve] {ANYTIME_MAXSAT_SOLVER} rc={rc} -> UNSATISFIABLE (no model)", file=sys.stderr)
         return float("inf"), None
     elif "s OPTIMUM FOUND" in output or "s SATISFIABLE" in output:
         cost_line = [line for line in output if line.startswith("o ")][-1]
@@ -52,7 +57,10 @@ def anytime_maxsat_solve(hard_clauses, soft_clauses, weights, timeout):
         model_line = [line for line in output if line.startswith("v ")][-1]
         model_line = model_line.replace("v ", "")
         model = [i if model_line[i-1] == "1" else -i for i in range(1, len(model_line)+1)]
+        status = "OPTIMUM" if "s OPTIMUM FOUND" in output else "SATISFIABLE"
+        print(f"[nuwls-solve] {ANYTIME_MAXSAT_SOLVER} rc={rc} -> {status} cost={cost} (solver ran successfully)", file=sys.stderr)
         return cost, model
     else:
-        # print("WARNING: No solution found.")
+        reason = "binary not found on PATH" if rc == 127 else ("crashed" if rc < 0 else "no solution line in output")
+        print(f"[nuwls-solve] {ANYTIME_MAXSAT_SOLVER} rc={rc} -> FAILED ({reason}); returning no model", file=sys.stderr)
         return None, None
