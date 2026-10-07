@@ -5,6 +5,9 @@
 #defined direction_/3.
 #defined type/2.
 #defined non_datalog/0.
+#defined weighted_size/0.
+#defined body_cost/2.
+#defined max_body_cost/1.
 
 #show body_literal/4.
 
@@ -16,13 +19,43 @@ singleton(V):-
 %% max_size(K):-
 %%     custom_max_size(K).
 max_size(K):-
+    not weighted_size,
     max_body(M),
     max_clauses(N),
     K = (M+1)*N.
 size(N):-
+    not weighted_size,
     max_size(MaxSize),
     N = 2..MaxSize,
     #sum{K+1,Rule : body_size(Rule,K)} == N.
+
+%% WITH body_cost/2 (ONLY FOR A SINGLE CLAUSE) THE SIZE IS THE COST: 1 FOR THE HEAD PLUS
+%% THE COST OF EACH BODY LITERAL. A LITERAL OF COST W ADDS W-1 ON TOP OF body_size, SUMMED
+%% OVER ONE #count PER COST CLASS
+max_size(K):-
+    weighted_size,
+    max_body(M),
+    max_body_cost(W),
+    K = M*W+1.
+extra_cost(W):-
+    body_cost(_,W),
+    W > 1.
+body_size_at_cost(W,K):-
+    extra_cost(W),
+    clause(0),
+    max_body(M),
+    K = 1..M,
+    #count{P,Vars : body_literal(0,P,_,Vars), body_cost(P,W)} == K.
+size(N):-
+    weighted_size,
+    max_size(MaxSize),
+    N = 2..MaxSize,
+    #sum{K+1,Rule : body_size(Rule,K); (W-1)*K,W : body_size_at_cost(W,K)} == N.
+%% body_size ENFORCES max_body, WHICH THE COST TERMS ALONE COULD SKIP
+:-
+    weighted_size,
+    clause(Rule),
+    not body_size(Rule,_).
 
 %% THIS DOES NOT WORK!!!???
 %% size(N+1):-

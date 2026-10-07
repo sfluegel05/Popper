@@ -3,7 +3,7 @@ from importlib import resources
 from janus_swi import query_once, consult
 from functools import cache, lru_cache
 from contextlib import contextmanager
-from . util import order_prog, prog_is_recursive, rule_is_recursive, calc_rule_size, calc_prog_size, get_raw_prog, format_rule, Literal, mdl_score, order_rule, canonicalise_prog_hash
+from . util import order_prog, prog_is_recursive, rule_is_recursive, calc_rule_size, calc_prog_size, calc_rule_cost, calc_prog_cost, get_raw_prog, format_rule, Literal, mdl_score, order_rule, canonicalise_prog_hash
 from . bkcons import deduce_neg_example_recalls
 from bitarray import frozenbitarray
 from bitarray.util import ones, zeros
@@ -160,7 +160,7 @@ class Tester():
 
             if tp > prog_size:
                 # maximum size of specialisations allowed
-                max_k_neg1 = min(settings.max_body - (prog_size - 1), self.state.max_literals - prog_size)
+                max_k_neg1 = min((settings.max_body - (calc_prog_size(prog) - 1)) * settings.max_body_cost, self.state.max_literals - prog_size)
                 # conditions which determine whether a program can be part of a solution
                 max_k_neg2 = min(self.state.best_hypothesis_mdl - prog_size, tp - prog_size)
                 max_k_neg = max(max_k_neg1, max_k_neg2)
@@ -245,7 +245,7 @@ class Tester():
             _, ordered_body = self.parse_rule(rule)
 
             if self.settings.noisy:
-                return query_once('pos_succeeds_k(R, K)', {'R': f'{head_str}:-{ordered_body}', 'K': calc_rule_size(rule)})['truth']
+                return query_once('pos_succeeds_k(R, K)', {'R': f'{head_str}:-{ordered_body}', 'K': calc_rule_cost(rule, self.settings)})['truth']
             else:
                 if self.state.min_pos_coverage == 1:
                     return bool_query(f'pos_index(_ID, {head_str}),{ordered_body}')
@@ -254,7 +254,7 @@ class Tester():
         else:
             with self.using(prog):
                 if self.settings.noisy:
-                    return query_once(f'covers_at_least_k_pos(K)',{'K':calc_prog_size(prog)})['truth']
+                    return query_once(f'covers_at_least_k_pos(K)',{'K':calc_prog_cost(prog, self.settings)})['truth']
                 else:
                     return bool_query('sat')
 
@@ -402,6 +402,8 @@ class Tester():
                 return pointless
 
         preds = [(p, pa) for p, pa in settings.body_preds if p not in missing]
+        # cheapest first, so the cheapest of extensionally equivalent preds is the one kept
+        preds.sort(key=lambda x: settings.body_costs.get(x[0], 1))
 
         for (p, pa), (q, qa) in combinations(preds, 2):
             if pa != qa:

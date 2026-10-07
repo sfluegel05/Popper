@@ -1,6 +1,6 @@
 import time
 from bitarray.util import ones
-from . util import format_rule, rule_is_recursive, prog_is_recursive, prog_has_invention, calc_prog_size, format_literal, GENERALISATION, SPECIALISATION, UNSAT, REDUNDANCY_CONSTRAINT1, REDUNDANCY_CONSTRAINT2, TMP_ANDY, BANISH, mdl_score, canonicalise, format_prog
+from . util import format_rule, rule_is_recursive, prog_is_recursive, prog_has_invention, calc_prog_size, calc_prog_cost, format_literal, GENERALISATION, SPECIALISATION, UNSAT, REDUNDANCY_CONSTRAINT1, REDUNDANCY_CONSTRAINT2, TMP_ANDY, BANISH, mdl_score, canonicalise, format_prog
 from . tester import Tester
 from . bkcons import get_bk_cons
 from . unsat import UnsatCoreFinder
@@ -70,7 +70,7 @@ def popper(settings):
             break
         stats.stats.total_programs += 1
 
-        prog_size = calc_prog_size(prog)
+        prog_size = calc_prog_cost(prog, settings)
         size_change = check_size_change(state, prog_size)
 
         # TEST
@@ -310,7 +310,7 @@ def build_constraints_noisy(settings, tester, state, unsatcore_finder, allsatcor
         spec_size_ = min([tp, fp + prog_size])
         if spec_size_ <= prog_size:
             add_spec = True
-        elif len(prog) == 1 and spec_size_ < settings.max_body + 1 and spec_size_ < state.max_literals:
+        elif len(prog) == 1 and spec_size_ < settings.max_rule_cost and spec_size_ < state.max_literals:
             spec_size = spec_size_
         elif len(prog) > 1 and spec_size_ < state.max_literals:
             spec_size = spec_size_
@@ -345,7 +345,7 @@ def build_constraints_noisy(settings, tester, state, unsatcore_finder, allsatcor
         if add_spec and not add_redund2:
             new_cons.append((SPECIALISATION, prog))
 
-        if not too_few_tp and not add_spec and spec_size and spec_size <= state.max_literals and (is_recursive or has_invention or spec_size <= settings.max_body):
+        if not too_few_tp and not add_spec and spec_size and spec_size <= state.max_literals and (is_recursive or has_invention or spec_size < settings.max_rule_cost):
             new_cons.append((SPECIALISATION, prog, spec_size))
             # seen_hyp_spec[fp + prog_size + mdl].append((prog, fn, fp))
 

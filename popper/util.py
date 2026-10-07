@@ -70,6 +70,18 @@ def calc_rule_size(rule):
     head, body = rule
     return 1 + len(body)
 
+# the size term of the MDL score: the head costs 1, each body literal the cost of its
+# predicate (body_cost/2 in the bias, default 1)
+def calc_rule_cost(rule, settings):
+    head, body = rule
+    if not settings.body_costs:
+        return 1 + len(body)
+    costs = settings.body_costs
+    return 1 + sum(costs.get(pred, 1) for pred, _args in body)
+
+def calc_prog_cost(prog, settings):
+    return sum(calc_rule_cost(rule, settings) for rule in prog)
+
 def reduce_prog(prog):
     reduced = {}
     for rule in prog:
@@ -187,9 +199,13 @@ class Settings:
 
         self.single_solve = not (self.recursion_enabled or self.pi_enabled)
 
+        self._deduce_body_costs(solver)
+
         logger.info(f'Max rules: {self.max_rules}')
         logger.info(f'Max vars: {self.max_vars}')
         logger.info(f'Max body: {self.max_body}')
+        if self.body_costs:
+            logger.info(f'Body costs: {self.body_costs}')
 
     def _load_bias(self, solver):
         with open(self.bias_file) as f:
@@ -200,6 +216,7 @@ class Settings:
             #defined clause_var/2.
             #defined var_type/3.
             #defined body_size/2.
+            #defined body_cost/2.
             #defined recursive/0.
             #defined var_in_literal/4.
         """)
@@ -255,6 +272,28 @@ class Settings:
             self.max_rules = 1
 
         self.body_preds = get_body_preds(solver)
+
+    def _deduce_body_costs(self, solver):
+        self.body_costs = {}
+        for x in solver.symbolic_atoms.by_signature('body_cost', arity=2):
+            pred = x.symbol.arguments[0].name
+            cost = x.symbol.arguments[1]
+            if not any(p == pred for p, _arity in self.body_preds):
+                logger.out(f'ERROR: body_cost({pred},{cost}) refers to {pred} which is not a body_pred')
+                exit()
+            if cost.type != clingo.SymbolType.Number or cost.number < 1:
+                logger.out(f'ERROR: body_cost({pred},{cost}) needs an integer cost of at least 1')
+                exit()
+            if cost.number != 1:
+                self.body_costs[pred] = cost.number
+
+        if self.body_costs and (not self.noisy or not self.single_solve or self.joiner):
+            logger.out('ERROR: body_cost/2 is only supported with --noisy and without recursion, predicate invention or the joiner')
+            exit()
+
+        self.max_body_cost = max(self.body_costs.values(), default=1)
+        # the most a single rule can cost
+        self.max_rule_cost = 1 + self.max_body * self.max_body_cost
 
     def _validate_directions(self):
         if self.has_directions:
@@ -550,7 +589,9 @@ def print_incomplete_solution(prog, size, conf_matrix, settings, noisy: bool):
     tp, fn, tn, fp = conf_matrix
     logger.out('*'*20)
     logger.out('New best hypothesis:')
-    if noisy:
+    if noisy and settings.body_costs:
+        logger.out(f'tp:{tp} fn:{fn} tn:{tn} fp:{fp} size:{calc_prog_size(prog)} cost:{size} mdl:{size+fn+fp}')
+    elif noisy:
         logger.out(f'tp:{tp} fn:{fn} tn:{tn} fp:{fp} size:{size} mdl:{size+fn+fp}')
     else:
         logger.out(f'tp:{tp} fn:{fn} tn:{tn} fp:{fp} size:{size}')
@@ -568,7 +609,10 @@ def print_prog_score(prog, score, settings, noisy: bool):
     if (tp+fn) > 0:
         recall = f'{tp / (tp+fn):0.2f}'
     logger.out('*'*10 + ' SOLUTION ' + '*'*10)
-    if noisy:
+    if noisy and settings.body_costs:
+        cost = calc_prog_cost(prog, settings)
+        logger.out(f'Precision:{precision} Recall:{recall} TP:{tp} FN:{fn} TN:{tn} FP:{fp} Size:{size} Cost:{cost} MDL:{cost+fn+fp}')
+    elif noisy:
         logger.out(f'Precision:{precision} Recall:{recall} TP:{tp} FN:{fn} TN:{tn} FP:{fp} Size:{size} MDL:{size+fn+fp}')
     else:
         logger.out(f'Precision:{precision} Recall:{recall} TP:{tp} FN:{fn} TN:{tn} FP:{fp} Size:{size}')

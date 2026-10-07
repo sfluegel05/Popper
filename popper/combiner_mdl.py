@@ -13,7 +13,7 @@ from pysat.formula import IDPool
 from . import stats
 from . import logger
 from bitarray.util import subset, any_and, ones, zeros, count_and, count_or
-from . util import rule_is_recursive, prog_is_recursive, prog_has_invention, calc_prog_size, format_prog, reduce_prog, calc_rule_size, print_incomplete_solution
+from . util import rule_is_recursive, prog_is_recursive, prog_has_invention, calc_prog_size, format_prog, reduce_prog, calc_rule_size, calc_rule_cost, calc_prog_cost, print_incomplete_solution
 from . state import update_best_hypothesis
 
 POS_EXAMPLE_WEIGHT = 1
@@ -378,7 +378,7 @@ class CombinerMDL:
 
             # tmp_dump[k] = prog
 
-            size = calc_rule_size(rule)
+            size = calc_rule_cost(rule, self.settings)
             ruleid_to_rule[k] = rule
             ruleid_to_size[k] = size
 
@@ -565,7 +565,7 @@ class CombinerMDL:
             prog = self.prog_lookup[prog_hash]
             rule = next(iter(prog))
             ruleid_to_rule[k] = rule
-            ruleid_to_size[k] = calc_rule_size(rule)
+            ruleid_to_size[k] = calc_rule_cost(rule, self.settings)
 
             for ex in self.coverage_pos[prog_hash].search(1):
                 rules_covering_pos[ex].append(k)
@@ -669,7 +669,7 @@ class CombinerMDL:
                     k = len(rulehash_to_id) + 1
                     rulehash_to_id[rule_hash] = k
                     ruleid_to_rule[k] = rule
-                    ruleid_to_size[k] = calc_rule_size(rule)
+                    ruleid_to_size[k] = calc_rule_cost(rule, self.settings)
                     ids.append(k)
                 else:
                     ids.append(rulehash_to_id[rule_hash])
@@ -902,7 +902,7 @@ class CombinerMDL:
         fp = neg_covered.count(1)
         tn = self.tester.num_neg - fp
         fn = self.tester.num_pos - tp
-        size = calc_prog_size(new_solution)
+        size = calc_prog_cost(new_solution, self.settings)
 
         update_best_hypothesis(self.settings, self.state, new_solution, size, (tp, fn, tn, fp))
         return True

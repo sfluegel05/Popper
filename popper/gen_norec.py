@@ -65,6 +65,9 @@ class Generator:
         encoding.append(f'max_clauses({self.settings.max_rules}).')
         encoding.append(f'max_body({self.settings.max_body}).')
         encoding.append(f'max_vars({self.settings.max_vars}).')
+        if self.settings.body_costs:
+            encoding.append('weighted_size.')
+            encoding.append(f'max_body_cost({self.settings.max_body_cost}).')
 
         encoding.extend(self._build_symmetry_breaking_constraints())
 

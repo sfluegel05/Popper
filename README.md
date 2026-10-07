@@ -63,6 +63,12 @@ These say that Popper can use the symbol *grandparent* with two arguments in the
 
 Popper can learn from [noisy](https://arxiv.org/pdf/2308.09393.pdf) data with the `--noisy` flag. Popper learns a minimal description length hypothesis.
 
+By default, each literal adds 1 to the size term of the MDL score. A bias file can give a body predicate a different integer cost of at least 1:
+```prolog
+body_cost(mother,3).
+```
+A rule then costs 1 for its head plus the cost of each body literal. Popper enumerates rules in increasing cost and returns the hypothesis with the lowest `fn + fp + cost`. If two body predicates have the same extension, Popper keeps the cheaper one. Costs require `--noisy` and do not support recursion or predicate invention.
+
 **Settings**
 
  - `--noisy`, `-n` learn from [noisy](https://arxiv.org/pdf/2308.09393.pdf) data using an MDL cost function (default: false)
