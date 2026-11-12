@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument('--max-body', type=int, default=None, help=f'Maximum number of body literals allowed in rule (default: {MAX_BODY})')
     parser.add_argument('--max-vars', type=int, default=None, help=f'Maximum number of variables allowed in rule (default: {MAX_VARS})')
     parser.add_argument('--nuwls', default=False, action='store_true', help='Use nuwls solver (default: False)')
-    parser.add_argument('--greedy-combine', default=False, action='store_true', help='Noisy mode: combine rules by greedy set cover only, without a MaxSAT/CP solve (default: False)')
+    parser.add_argument('--no-final-combine-solve', dest='final_combine_solve', default=True, action='store_false', help='Noisy mode: end with the greedy combination instead of an exact MaxSAT/CP solve after the search (default: solve)')
     parser.add_argument('-v', action='count', default=1, dest='verbosity', help='Increase verbosity (-v, -vv, or -vvv)')
     parser.add_argument('-j', dest='joiner', default=False, action='store_true', help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -130,7 +130,7 @@ class Settings:
         settings = Settings(**conf)
         return settings
 
-    def __init__(self, timeout=TIMEOUT, max_body=MAX_BODY, max_vars=MAX_VARS, ex_file=None, bk_file=None, bias_file=None, noisy=False, nuwls=None, anytime_timeout=ANYTIME_TIMEOUT, verbosity=1, joiner=False, all_opt=False, max_body_override=False, max_vars_override=False, final_combine_timeout=None, greedy_combine=False, prolog_bk_files=None, **kwargs):
+    def __init__(self, timeout=TIMEOUT, max_body=MAX_BODY, max_vars=MAX_VARS, ex_file=None, bk_file=None, bias_file=None, noisy=False, nuwls=None, anytime_timeout=ANYTIME_TIMEOUT, verbosity=1, joiner=False, all_opt=False, max_body_override=False, max_vars_override=False, final_combine_timeout=None, final_combine_solve=True, prolog_bk_files=None, **kwargs):
 
         self.all_opt = all_opt
         self.joiner = joiner
@@ -138,8 +138,8 @@ class Settings:
         self.anytime_timeout = anytime_timeout
         # seconds for the exact final combine solve; None = unbounded
         self.final_combine_timeout = final_combine_timeout
-        # noisy non-recursive learning: combine rules by greedy set cover only, without a MaxSAT/CP solve
-        self.greedy_combine = greedy_combine
+        # noisy non-recursive learning: False ends with the greedy combination, without the exact solve after the search
+        self.final_combine_solve = final_combine_solve
         self.bias_file = bias_file
         self.bk_file = bk_file
         # files Prolog loads in place of bk_file (e.g. a .qlf superset of it); everything derived from the

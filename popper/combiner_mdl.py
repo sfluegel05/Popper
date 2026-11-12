@@ -866,7 +866,7 @@ class CombinerMDL:
             # do a quick greedy search to determine an upperbound
             new_hyp_found = self.greedy_upper_bound()
 
-            if self.settings.greedy_combine:
+            if last_combine_stage and not self.settings.final_combine_solve:
                 return new_hyp_found
             if not self.settings.nuwls:
                 if last_combine_stage:
