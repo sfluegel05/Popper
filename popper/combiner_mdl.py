@@ -432,7 +432,10 @@ class CombinerMDL:
         #                 encoding.append([-r1, -r2])  # hard clause
 
         if last_combine_stage or not self.settings.nuwls:
-            _, model = maxsat.exact_maxsat_solve(encoding, soft_clauses, weights)
+            timeout = self.settings.final_combine_timeout if last_combine_stage else None
+            _, model = maxsat.exact_maxsat_solve(encoding, soft_clauses, weights, timeout)
+            if model is None and timeout is not None:
+                logger.out(f'Final combine solve did not finish within {timeout} s; keeping the best hypothesis so far')
         else:
             _, model = maxsat.anytime_maxsat_solve(encoding, soft_clauses, weights, self.settings.anytime_timeout)
 

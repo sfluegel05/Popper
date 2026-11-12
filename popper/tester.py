@@ -79,7 +79,8 @@ class Tester():
         if not settings.pi_enabled:
             consult('prog', f':- dynamic {settings.head_literal.predicate}/{len(settings.head_literal.arguments)}.')
 
-        for x in [exs_pl_path, bk_pl_path, test_pl_path]:
+        bk_pl_paths = self.settings.prolog_bk_files or [bk_pl_path]
+        for x in [exs_pl_path, *bk_pl_paths, test_pl_path]:
             if os.name == 'nt': # if on Windows, SWI requires escaped directory separators
                 x = x.replace('\\', '\\\\')
             logger.info(f'Consulting {x}')

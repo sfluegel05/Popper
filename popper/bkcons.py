@@ -2,8 +2,11 @@
 # Andrew Cropper, Céline Hocquette: Learning Logic Programs by Discovering Where Not to Search. AAAI 2023: 6289-6296
 # Andrew Cropper, Filipe Gouveia, David M. Cerna: Honey, I shrunk the hypothesis space (through logical preprocessing). CoRR abs/2506.06739 (2025)
 
+import gc
 import string
+from contextlib import contextmanager
 import clingo
+import numpy as np
 from collections import defaultdict
 from itertools import permutations, combinations
 from . util import generate_binary_strings
@@ -48,8 +51,8 @@ TIDY_OUTPUT = """
 #defined clause/1.
 """
 
-def build_props(settings, arities):
-    """Generate potential properties (functional dependencies, etc.) between predicates."""
+def prop_pairs(settings, arities):
+    """Variable patterns (xs, ys) of the P(xs), Q(ys) literal pairs to check, e.g. (('A','B'), ('B','C'))."""
     myvars = tuple(string.ascii_uppercase[:settings.max_vars])
 
     pairs = set()
@@ -60,14 +63,17 @@ def build_props(settings, arities):
             for ys in permutations(candidate_vars, a2):
                 if not connected(xs, ys) or not uses_in_order(xs, ys):
                     continue
-                
+
                 # Canonicalize to handle symmetries
                 longer, shorter = sorted([xs, ys], key=len, reverse=True)
                 canon = canonicalise_vars(longer, shorter)
                 pairs.add((canon[0], canon[1]))
+    return sorted(pairs)
 
+def build_props(settings, arities):
+    """Generate potential properties (functional dependencies, etc.) between predicates."""
     props, cons = [], []
-    for xs, ys in sorted(pairs):
+    for xs, ys in prop_pairs(settings, arities):
         xs_set, ys_set = set(xs), set(ys)
         left, right = ''.join(x.lower() for x in xs), ''.join(y.lower() for y in ys)
 
@@ -127,7 +133,10 @@ def deduce_recalls(settings, solver):
             all_recalls[(pred, var_subset)] = recall
 
     settings.recalls.update(all_recalls)
+    return recall_cons(all_recalls)
 
+def recall_cons(all_recalls):
+    """Constraints for the recalls up to 4 of {(pred, fixed argument mask): recall}."""
     out = []
     for (pred, key), recall in all_recalls.items():
         if recall > 4:
@@ -251,8 +260,197 @@ def deduce_non_singletons(settings, solver):
         _process_total_atoms(solver, f'total{suffix}', n + 1, pred_lookup, seen, cons)
     return cons
 
-def deduce_bk_props(settings, solver):
-    """Deduce properties (props) in the main process."""
+def read_bk_facts(bk_string, body_preds):
+    """Body-predicate facts of a facts-only BK as tuples of interned ints, or None if the BK holds anything
+    else (rules, directives, quoted or compound terms), whose consequences only clingo can derive."""
+    arity = dict(body_preds)
+    ids = {}
+    facts = defaultdict(set)
+    for line in bk_string.splitlines():
+        line = line.strip()
+        if not line or line.startswith('%'):
+            continue
+        if not line.endswith(').') or ':-' in line or '"' in line or "'" in line:
+            return None
+        name, _, rest = line[:-2].partition('(')
+        if '(' in rest or ')' in rest or ' ' in name:
+            return None
+        if name not in arity:
+            continue
+        args = [a.strip() for a in rest.split(',')]
+        if len(args) == arity[name]:
+            facts[name].add(tuple(ids.setdefault(a, len(ids)) for a in args))
+    return facts
+
+@contextmanager
+def gc_paused():
+    """Pauses Python's cyclic GC, which otherwise rescans the millions of fact tuples of a large BK on every
+    collection (226 s instead of 8 s to parse 9M facts)."""
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if enabled:
+            gc.enable()
+
+def fact_arrays(facts, arity, preds):
+    """The facts of each pred as an int64 array of shape (facts, arity)."""
+    return {p: np.array(list(facts.get(p, ())), dtype=np.int64).reshape(len(facts.get(p, ())), arity[p])
+            for p in preds}
+
+def _num_ids(arrays):
+    return 1 + max((int(a.max()) for a in arrays.values() if a.size), default=0)
+
+def _row_codes(cols, n_ids):
+    """One int64 per row of cols (values below n_ids), equal iff the rows are equal."""
+    code = cols[:, 0].copy()
+    for k in range(1, cols.shape[1]):
+        if int(code.max(initial=0)) + 1 > (2**62) // n_ids:
+            code = np.unique(code, return_inverse=True)[1].reshape(-1).astype(np.int64)
+        code = code * n_ids + cols[:, k]
+    return code
+
+def pointless_from_facts(settings, facts):
+    """Tester.find_pointless_relations on the parsed facts of a facts-only BK: preds without facts, and all
+    but one pred of each group with identical facts. Unlike the Prolog version it sees only this BK, not
+    whatever else Prolog has loaded (settings.prolog_bk_files)."""
+    body_types = settings.body_types
+    pointless = {(p, pa) for p, pa in settings.body_preds if not facts.get(p)}
+    missing = {p for p, _ in pointless}
+    preds = [(p, pa) for p, pa in settings.body_preds if p not in missing]
+    keep = set()
+    for a, b in combinations(preds, 2):
+        (p, pa), (q, qa) = a, b
+        if pa != qa:
+            continue
+        if body_types and body_types.get(p) != body_types.get(q):
+            continue
+        if a in pointless and b in pointless:
+            continue
+        if facts[p] != facts[q]:
+            continue
+        if a not in pointless and b not in pointless:
+            if a in keep:
+                pointless.add(b)
+            elif b in keep:
+                pointless.add(a)
+            else:
+                keep.add(a)
+                pointless.add(b)
+        else:
+            if a not in keep:
+                pointless.add(a)
+            if b not in keep:
+                pointless.add(b)
+    return pointless
+
+def recalls_from_facts(settings, facts):
+    """deduce_recalls on the parsed facts of a facts-only BK, without grounding it in clingo."""
+    arity = dict(settings.body_preds)
+    arrays = fact_arrays(facts, arity, arity)
+    n_ids = _num_ids(arrays)
+    all_recalls = {}
+    for pred, a in settings.body_preds:
+        arr = arrays[pred]
+        all_recalls[(pred, (0,) * a)] = len(arr)
+        if not len(arr):
+            continue
+        for var_subset in generate_binary_strings(a):
+            cols = arr[:, [i for i, bit in enumerate(var_subset) if bit]]
+            counts = np.unique(_row_codes(cols, n_ids), return_counts=True)[1]
+            all_recalls[(pred, var_subset)] = int(counts.max())
+    settings.recalls.update(all_recalls)
+    return recall_cons(all_recalls)
+
+def projection_relations(facts, arity, projections):
+    """Overlap and containment between projections (pred, positions) of the facts onto argument positions.
+    Gives index, meet, sub: meet[i,j] iff projections i and j share a tuple, sub[i,j] iff i is contained in j.
+
+    Every tuple gets a bitmask of the projections holding it. Two projections meet iff some mask has both
+    bits, and i is contained in j iff every mask with bit i has bit j, so only distinct masks matter."""
+    arrays = fact_arrays(facts, arity, {p for p, _ in projections})
+    n_ids = _num_ids(arrays)
+    index, meet, sub = {}, {}, {}
+    by_len = defaultdict(list)
+    for pr in sorted(projections):
+        by_len[len(pr[1])].append(pr)
+    for L, prs in by_len.items():
+        code = _row_codes(np.concatenate([arrays[p][:, list(pos)] for p, pos in prs]), n_ids)
+        rows = np.unique(code, return_inverse=True)[1].reshape(-1)
+        del code
+        words = (len(prs) + 63) // 64
+        masks = np.zeros((int(rows.max(initial=-1)) + 1, words), dtype=np.uint64)
+        start = 0
+        for j, (p, _) in enumerate(prs):
+            end = start + len(arrays[p])
+            masks[rows[start:end], j >> 6] |= np.uint64(1 << (j & 63))
+            start = end
+        del rows
+        distinct = np.unique(masks.view(np.dtype((np.void, 8 * words))).reshape(-1))
+        del masks
+        bits = np.unpackbits(np.frombuffer(distinct.tobytes(), dtype=np.uint8).reshape(len(distinct), 8 * words),
+                             axis=1, bitorder='little')[:, :len(prs)].astype(np.float32)
+        both = bits.T @ bits
+        own = np.diag(both)
+        for j, pr in enumerate(prs):
+            index[pr] = (L, j)
+        meet[L] = both > 0
+        sub[L] = both == own[:, None]
+    return index, meet, sub
+
+def deduce_bk_props(settings, solver, facts=None):
+    """Deduce properties (props) from overlap and containment of the BK's fact projections; falls back to
+    clingo for BKs that are not plain facts. Gives the same props as deduce_bk_props_clingo."""
+    if facts is None:
+        facts = read_bk_facts(settings.bk_string, settings.body_preds)
+    if facts is None:
+        return deduce_bk_props_clingo(settings, solver)
+
+    preds = sorted(settings.body_preds)
+    arity = dict(preds)
+    if settings.body_types:
+        types = {p: settings.body_types.get(p) for p, _ in preds}
+    else:
+        types = {p: ('t',) * a for p, a in preds}
+
+    arities = {a for _, a in preds}
+    checks = []  # (prop name, p, q, disjoint or subset, projection of p, projection of q)
+    for xs, ys in prop_pairs(settings, arities):
+        shared = [v for v in ys if v in xs]
+        pos_p = tuple(xs.index(v) for v in shared)
+        pos_q = tuple(ys.index(v) for v in shared)
+        left = ''.join(x.lower() for x in xs)
+        right = ''.join(y.lower() for y in ys)
+        implies = set(ys) <= set(xs)
+        for p, pa in preds:
+            if pa != len(xs) or not facts[p] or types[p] is None:
+                continue
+            for q, qa in preds:
+                if qa != len(ys) or types[q] is None:
+                    continue
+                if any(types[p][i] != types[q][j] for i, j in zip(pos_p, pos_q)):
+                    continue
+                # P(xs) and Q(ys) never agree on the shared variables
+                if xs != ys or p < q:
+                    checks.append((f'not_{left}_{right}', p, q, False, (p, pos_p), (q, pos_q)))
+                # every P(xs) has a matching Q(ys)
+                if implies and (xs != ys or p != q):
+                    checks.append((f'{left}_{right}', p, q, True, (p, pos_p), (q, pos_q)))
+
+    index, meet, sub = projection_relations(facts, arity, {pr for c in checks for pr in c[4:]})
+    props = []
+    for name, p, q, implies, pr_p, pr_q in checks:
+        g, i = index[pr_p]
+        j = index[pr_q][1]
+        if sub[g][i, j] if implies else not meet[g][i, j]:
+            props.append(f'prop({name},({p},{q})).')
+
+    _, new_cons = build_props(settings, arities)
+    return props + new_cons
+
+def deduce_bk_props_clingo(settings, solver):
+    """Deduce properties (props) by grounding them in clingo."""
     prog = []
     arities = set()
     for p, a in settings.body_preds:
@@ -290,12 +488,29 @@ def get_bk_cons(settings, tester):
     """Main function to gather all BK-derived constraints."""
     with open(settings.bk_file) as f:
         settings.bk_string = f.read()
+    with gc_paused():
+        facts = read_bk_facts(settings.bk_string, settings.body_preds)
 
     logger.info(f'Finding pointless rules')
-    pointless = settings.pointless = tester.find_pointless_relations()
+    if facts is None:
+        pointless = tester.find_pointless_relations()
+    else:
+        pointless = pointless_from_facts(settings, facts)
+    settings.pointless = pointless
     for p, a in pointless:
         logger.info(f'Pointless relation: {p}/{a}')
         settings.body_preds.remove((p, a))
+
+    # without types, a facts-only BK needs no grounding: the singleton and type constraints need types
+    if facts is not None and not settings.body_types:
+        settings.datalog = True
+        logger.info(f'Loading recalls')
+        with stats.duration('recalls'), gc_paused():
+            bkcons = recalls_from_facts(settings, facts)
+        logger.info(f'Loading BK cons')
+        with stats.duration('bkcons'), gc_paused():
+            bkcons += deduce_bk_props(settings, None, facts)
+        return bkcons
 
     base_solver = clingo.Control(['-Wnone'], logger=lambda code, msg: None)
     try:
@@ -327,8 +542,8 @@ def get_bk_cons(settings, tester):
     bkcons.extend(type_cons)
 
     logger.info(f'Loading BK cons')
-    with stats.duration('bkcons'):
-        results = deduce_bk_props(settings, base_solver)
+    with stats.duration('bkcons'), gc_paused():
+        results = deduce_bk_props(settings, base_solver, facts)
         for x in results:
             if x.startswith('prop'): logger.debug(f'BKCON {x}')
         bkcons.extend(results)

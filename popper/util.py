@@ -129,14 +129,19 @@ class Settings:
         settings = Settings(**conf)
         return settings
 
-    def __init__(self, timeout=TIMEOUT, max_body=MAX_BODY, max_vars=MAX_VARS, ex_file=None, bk_file=None, bias_file=None, noisy=False, nuwls=None, anytime_timeout=ANYTIME_TIMEOUT, verbosity=1, joiner=False, all_opt=False, max_body_override=False, max_vars_override=False, **kwargs):
+    def __init__(self, timeout=TIMEOUT, max_body=MAX_BODY, max_vars=MAX_VARS, ex_file=None, bk_file=None, bias_file=None, noisy=False, nuwls=None, anytime_timeout=ANYTIME_TIMEOUT, verbosity=1, joiner=False, all_opt=False, max_body_override=False, max_vars_override=False, final_combine_timeout=None, prolog_bk_files=None, **kwargs):
 
         self.all_opt = all_opt
         self.joiner = joiner
         self.nuwls = nuwls
         self.anytime_timeout = anytime_timeout
+        # seconds for the exact final combine solve; None = unbounded
+        self.final_combine_timeout = final_combine_timeout
         self.bias_file = bias_file
         self.bk_file = bk_file
+        # files Prolog loads in place of bk_file (e.g. a .qlf superset of it); everything derived from the
+        # BK (pointless relations, recalls, props) still comes from bk_file if it holds only facts
+        self.prolog_bk_files = prolog_bk_files
         self.ex_file = ex_file
         self.max_body = MAX_BODY if max_body is None else max_body
         self.max_vars = MAX_VARS if max_vars is None else max_vars

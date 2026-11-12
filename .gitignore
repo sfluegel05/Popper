@@ -145,3 +145,7 @@ static
 
 # macOS files
 .DS_Store
+
+# Cython-generated C sources (built from *.pyx)
+*.c
+*.pyd

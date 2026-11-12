@@ -1,5 +1,5 @@
 # code written by Andreas Niskanen (andreas.niskanen@helsinki.fi)
-import subprocess, tempfile
+import multiprocessing, subprocess, tempfile
 
 from pysat.formula import WCNF
 from pysat.examples.rc2 import RC2Stratified
@@ -19,7 +19,32 @@ def new_wcnf_to_file(hard_clauses, soft_clauses, weights, file):
         file.write(str(w) + " " + " ".join(map(str, clause)) + " 0" + "\n")
     file.flush()
 
-def exact_maxsat_solve(hard_clauses, soft_clauses, weights):
+def exact_maxsat_solve(hard_clauses, soft_clauses, weights, timeout=None):
+    """Optimal RC2 solve. With a timeout it runs in a forked child and gives (inf, None) if the child
+    does not finish in time."""
+    if timeout is None:
+        return _exact_maxsat_solve(hard_clauses, soft_clauses, weights)
+    ctx = multiprocessing.get_context('fork')
+    recv, send = ctx.Pipe(duplex=False)
+    child = ctx.Process(target=_exact_maxsat_child, args=(send, hard_clauses, soft_clauses, weights), daemon=True)
+    child.start()
+    send.close()
+    try:
+        result = recv.recv() if recv.poll(timeout) else (float("inf"), None)
+    except EOFError:
+        result = (float("inf"), None)
+    finally:
+        if child.is_alive():
+            child.kill()
+        child.join()
+        recv.close()
+    return result
+
+def _exact_maxsat_child(conn, hard_clauses, soft_clauses, weights):
+    conn.send(_exact_maxsat_solve(hard_clauses, soft_clauses, weights))
+    conn.close()
+
+def _exact_maxsat_solve(hard_clauses, soft_clauses, weights):
     wcnf = WCNF()
     for clause in hard_clauses:
         wcnf.append(clause)
